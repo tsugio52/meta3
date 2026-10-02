@@ -204,72 +204,72 @@
     function setupXRControllers() {
       let handModelFactory = null;
       if (typeof THREE.XRHandModelFactory !== 'undefined') {
-        handModelFactory = new THREE.XRHandModelFactory();
-      }
-
-      for (let i = 0; i < 2; i++) {
-        const controller = renderer.xr.getController(i);
-        xrCameraSpace.add(controller);
-        
-        const handGroup = new THREE.Group();
-        const palm = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.02, 0.1), new THREE.MeshStandardMaterial({color: 0x222222, metalness: 0.8, roughness: 0.2}));
-        const core = new THREE.Mesh(new THREE.SphereGeometry(0.025, 16, 16), new THREE.MeshStandardMaterial({color: i===0?0xff3333:0x3388ff, emissive: i===0?0xff3333:0x3388ff, emissiveIntensity: 0.8}));
-        core.position.z = -0.02;
-        handGroup.add(palm); handGroup.add(core);
-        controller.add(handGroup);
-        
-        controller.userData.velocity = new THREE.Vector3(); 
-        controller.userData.prevPositions = [];
-
-        controller.addEventListener('connected', function(e) { 
-          this.userData.inputSource = e.data; 
-          if (e.data.hand) {
-            handGroup.visible = false;
-          } else {
-            handGroup.visible = true;
-          }
-        });
-
+        // 2. ハンドトラッキングモデルの追加
         const hand = renderer.xr.getHand(i);
         if (handModelFactory) {
+          // 外部GLTFに依存せず確実に描画される "spheres"（球体の関節モデル）を使用
           const handModel = handModelFactory.createHandModel(hand, "spheres");
           hand.add(handModel);
         }
         xrCameraSpace.add(hand);
 
+        // --- インタラクションイベント（コントローラーと手、両方で発火します） ---
+        
+        // トリガーを引く、または親指と人差し指でつまむ（ピンチ）動作
         controller.addEventListener('selectstart', (e) => {
           const ctrl = e.target;
           if (readyPot && !readyPot.isGrabbed) {
             const ctrlPos = new THREE.Vector3(); ctrl.getWorldPosition(ctrlPos);
             const potPos = new THREE.Vector3(); readyPot.mesh.getWorldPosition(potPos);
             
-            // 💡 掴む判定の距離を少し広げて、掴みやすくしました（0.4 -> 0.5）
-            if (ctrlPos.distanceTo(potPos) < 0.5) {
-              readyPot.isGrabbed = true; ctrl.userData.grabbedPot = readyPot;
-              ctrl.attach(readyPot.mesh);
+            // 💡 手を伸ばしてある程度近づいたら（距離 1.0 以内）アバウトに掴めるように判定を大幅に拡大
+            if (ctrlPos.distanceTo(potPos) < 1.0) {
+              readyPot.isGrabbed = true; 
+              ctrl.userData.grabbedPot = readyPot;
+              
+              // 💡 掴んだ瞬間に、鉢と手の距離（オフセット）をなくし、手の中にピタッと吸着させる
+              ctrl.add(readyPot.mesh);
+              readyPot.mesh.position.set(0, -0.05, -0.05); // 手のひらにちょうど収まる位置
+              readyPot.mesh.rotation.set(0, 0, 0); // 傾きもリセットして綺麗に持つ
+              
               triggerHaptics(ctrl, 0.5, 30);
             }
           }
         });
 
+        // トリガーを離す、またはつまむのをやめる（リリース）動作
         controller.addEventListener('selectend', (e) => {
           const ctrl = e.target;
           if (ctrl.userData.grabbedPot) {
-            const pot = ctrl.userData.grabbedPot; pot.isGrabbed = false; ctrl.userData.grabbedPot = null;
-            scene.attach(pot.mesh);
+            const pot = ctrl.userData.grabbedPot; 
+            pot.isGrabbed = false; 
+            ctrl.userData.grabbedPot = null;
+            scene.attach(pot.mesh); // ワールド座標系（空間）に鉢を戻す
             
-            // 💡 投げる力の倍率を上げ（2.0 -> 3.0）、速度が遅いと下に落ちる原因となっていたしきい値を削除しました
-            const vel = ctrl.userData.velocity.clone().multiplyScalar(3.0); 
+            const potPos = new THREE.Vector3(); 
+            pot.mesh.getWorldPosition(potPos);
             
-            flyingPots.push({ mesh: pot.mesh, bodyMat: pot.bodyMat, soilMat: pot.soilMat, leafMat: pot.leafMat, type: pot.type, vel: vel, angVel: new THREE.Vector3((Math.random()-0.5)*15, (Math.random()-0.5)*15, (Math.random()-0.5)*15) });
-            readyPot = null;
-            
-            triggerHaptics(ctrl, Math.min(vel.length()/15, 1.0), 60);
-            playSound('whoosh', vel.length()/10);
-            setTimeout(spawnReadyPot, 600);
+            // 💡 台座の近く（距離 0.6 以内）で離した場合は、投げずに台座へピタッと戻す（置く）
+            if (potPos.distanceTo(ARENA.readyPos) < 0.6) {
+              pot.mesh.position.copy(ARENA.readyPos);
+              pot.mesh.rotation.set(0, 0, 0);
+              // readyPot をそのまま維持するので、再度掴むことができます
+              triggerHaptics(ctrl, 0.2, 20);
+            } else {
+              // 💡 台座から離れている場合は投げる（遅くても下に落ちないように速度足切りを撤廃＆力を3倍に）
+              const vel = ctrl.userData.velocity.clone().multiplyScalar(3.0); 
+              
+              flyingPots.push({ mesh: pot.mesh, bodyMat: pot.bodyMat, soilMat: pot.soilMat, leafMat: pot.leafMat, type: pot.type, vel: vel, angVel: new THREE.Vector3((Math.random()-0.5)*15, (Math.random()-0.5)*15, (Math.random()-0.5)*15) });
+              readyPot = null; // 投げたので手元の鉢は無しにする
+              
+              triggerHaptics(ctrl, Math.min(vel.length()/15, 1.0), 60);
+              playSound('whoosh', vel.length()/10);
+              setTimeout(spawnReadyPot, 600);
+            }
           }
         });
 
+        // グリップボタンを押す、または手を握る（グーの形）動作
         controller.addEventListener('squeezestart', (e) => {
           const ctrl = e.target; 
           if (i === 1) { 
