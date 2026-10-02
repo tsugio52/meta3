@@ -174,11 +174,12 @@
       room.position.set(0, ARENA.ceilY/2, ARENA.wallZ/2 + 2);
       scene.add(room);
 
-      // 💡 マットな単色の床に変更（チカチカする原因となるテクスチャを排除）
+      // 💡 マットな単色の床に変更
       const floorMat = new THREE.MeshStandardMaterial({ color: 0x3d3530, roughness: 1.0, metalness: 0.0 });
       const floor = new THREE.Mesh(new THREE.PlaneGeometry(30, 30), floorMat);
       floor.rotation.x = -Math.PI / 2;
-      floor.position.y = ARENA.floorY;
+      // 💡 Zファイティング（ちらつき）防止のため、部屋の底面よりわずかに(1cm)上に配置
+      floor.position.y = ARENA.floorY + 0.01;
       floor.receiveShadow = true;
       scene.add(floor);
 
@@ -204,6 +205,35 @@
     function setupXRControllers() {
       let handModelFactory = null;
       if (typeof THREE.XRHandModelFactory !== 'undefined') {
+        handModelFactory = new THREE.XRHandModelFactory();
+      }
+
+      for (let i = 0; i < 2; i++) {
+        const controller = renderer.xr.getController(i);
+        xrCameraSpace.add(controller);
+        
+        // コントローラー用の代替メッシュ
+        const handGroup = new THREE.Group();
+        const palm = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.02, 0.1), new THREE.MeshStandardMaterial({color: 0x222222, metalness: 0.8, roughness: 0.2}));
+        const core = new THREE.Mesh(new THREE.SphereGeometry(0.025, 16, 16), new THREE.MeshStandardMaterial({color: i===0?0xff3333:0x3388ff, emissive: i===0?0xff3333:0x3388ff, emissiveIntensity: 0.8}));
+        core.position.z = -0.02;
+        handGroup.add(palm); handGroup.add(core);
+        controller.add(handGroup);
+        
+        controller.userData.velocity = new THREE.Vector3(); 
+        controller.userData.prevPositions = [];
+
+        // 接続時にハンドトラッキングかどうか判定
+        controller.addEventListener('connected', function(e) { 
+          this.userData.inputSource = e.data; 
+          // 手が認識された場合は、標準の代替メッシュ(箱と球)を隠す
+          if (e.data.hand) {
+            handGroup.visible = false;
+          } else {
+            handGroup.visible = true;
+          }
+        });
+
         // 2. ハンドトラッキングモデルの追加
         const hand = renderer.xr.getHand(i);
         if (handModelFactory) {
@@ -213,7 +243,7 @@
         }
         xrCameraSpace.add(hand);
 
-        // --- インタラクションイベント（コントローラーと手、両方で発火します） ---
+        // --- インタラクションイベント ---
         
         // トリガーを引く、または親指と人差し指でつまむ（ピンチ）動作
         controller.addEventListener('selectstart', (e) => {
