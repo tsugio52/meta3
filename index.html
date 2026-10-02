@@ -79,7 +79,6 @@
     function triggerHaptics(controller, intensity = 1.0, durationMs = 100) {
       if (!controller.userData.inputSource) return;
       const gamepad = controller.userData.inputSource.gamepad;
-      // ハンドトラッキング時はハプティクス機能がないためスキップされる
       if (gamepad && gamepad.hapticActuators && gamepad.hapticActuators.length > 0) {
         gamepad.hapticActuators[0].pulse(intensity, durationMs);
       }
@@ -87,23 +86,15 @@
 
     function createCanvas(w, h, fn) { const c = document.createElement('canvas'); c.width = w; c.height = h; fn(c.getContext('2d'), w, h); return c; }
     
-    // 💡 壁を落ち着いたダークグレー/ブラウン調の壁紙に変更
     function texWall() { return new THREE.CanvasTexture(createCanvas(256, 256, (ctx, w, h) => { ctx.fillStyle='#3a3532'; ctx.fillRect(0,0,w,h); for(let i=0;i<3000;i++){ ctx.fillStyle=Math.random()>0.5?'rgba(0,0,0,0.1)':'rgba(255,255,255,0.03)'; ctx.fillRect(Math.random()*w,Math.random()*h,2,2); } })); }
-    
-    // 💡 床をフローリング風に変更
-    function texFloor() { const t = new THREE.CanvasTexture(createCanvas(512, 512, (ctx, w, h) => { ctx.fillStyle='#d2a679'; ctx.fillRect(0,0,w,h); ctx.fillStyle='#b8865c'; for(let i=0;i<120;i++){ ctx.fillRect(0,Math.random()*h,w,Math.random()*5+1); } ctx.strokeStyle='#7a5230'; ctx.lineWidth=2; for(let i=0;i<w;i+=64){ ctx.beginPath(); ctx.moveTo(i,0); ctx.lineTo(i,h); ctx.stroke(); } for(let i=0;i<h;i+=128){ ctx.beginPath(); ctx.moveTo(0,i); ctx.lineTo(w,i); ctx.stroke(); } })); t.wrapS=t.wrapT=THREE.RepeatWrapping; t.repeat.set(8,8); return t; }
-    
-    // 💡 消えていた鉢、土、マグマ、木箱のテクスチャ関数を復元
     function texClay() { return new THREE.CanvasTexture(createCanvas(512, 512, (ctx, w, h) => { ctx.fillStyle='#a86a45'; ctx.fillRect(0,0,w,h); const img=ctx.getImageData(0,0,w,h), d=img.data; for(let i=0;i<d.length;i+=4){ const n=(Math.random()-0.5)*25; d[i]=Math.min(255,Math.max(0,d[i]+n)); d[i+1]=Math.min(255,Math.max(0,d[i+1]+n*0.7)); d[i+2]=Math.min(255,Math.max(0,d[i+2]+n*0.4)); } ctx.putImageData(img,0,0); })); }
     function texSoil() { return new THREE.CanvasTexture(createCanvas(256, 256, (ctx, w, h) => { ctx.fillStyle='#1d120d'; ctx.fillRect(0,0,w,h); for(let i=0;i<1500;i++){ ctx.fillStyle=Math.random()>0.4?'rgba(65,42,28,0.75)':'rgba(8,6,4,0.9)'; ctx.beginPath(); ctx.arc(Math.random()*w,Math.random()*h,Math.random()*2+0.5,0,Math.PI*2); ctx.fill(); } })); }
     function texMagma() { return new THREE.CanvasTexture(createCanvas(512, 512, (ctx, w, h) => { ctx.fillStyle='#181210'; ctx.fillRect(0,0,w,h); ctx.strokeStyle='#ff4400'; ctx.lineWidth=8; ctx.shadowColor='#ffaa00'; ctx.shadowBlur=12; for(let i=0;i<12;i++){ ctx.beginPath(); let tx=Math.random()*w, ty=Math.random()*h; ctx.moveTo(tx,ty); for(let s=0;s<6;s++){ tx+=(Math.random()-0.5)*80; ty+=(Math.random()-0.5)*80; ctx.lineTo(tx,ty); } ctx.stroke(); } })); }
     function texCrate() { return new THREE.CanvasTexture(createCanvas(256, 256, (ctx, w, h) => { ctx.fillStyle='#8b5a2b'; ctx.fillRect(0,0,w,h); ctx.strokeStyle='#3e2410'; ctx.lineWidth=8; ctx.strokeRect(4,4,w-8,h-8); ctx.beginPath(); ctx.moveTo(4,4); ctx.lineTo(w-4,h-4); ctx.moveTo(w-4,4); ctx.lineTo(4,h-4); ctx.stroke(); })); }
     
-    // 💡 色の赤みを抜き、自然な素焼き（テラコッタ）色に変更
     function initScene() {
       const container = document.getElementById('canvas-container');
       scene = new THREE.Scene(); 
-      // 💡 背景色・フォグを夜の室内に合わせて暗めに変更
       scene.background = new THREE.Color(0x1a1817); 
       scene.fog = new THREE.FogExp2(0x1a1817, 0.025);
 
@@ -152,7 +143,6 @@
           if (supported) {
             vrBtn.addEventListener('click', async () => {
               try {
-                // Hand Tracking 機能をオプションとして要求する
                 const session = await navigator.xr.requestSession('immersive-vr', { 
                   optionalFeatures: ['local-floor', 'hand-tracking'] 
                 });
@@ -179,14 +169,13 @@
 
     function setupImmersiveEnvironment() {
       const roomGeo = new THREE.BoxGeometry(ARENA.sideX * 2, ARENA.ceilY, Math.abs(ARENA.wallZ) + 4);
-      // 💡 壁に壁紙テクスチャを適用
       const roomMat = new THREE.MeshStandardMaterial({ map: texWall(), roughness: 1.0, side: THREE.BackSide });
       const room = new THREE.Mesh(roomGeo, roomMat);
       room.position.set(0, ARENA.ceilY/2, ARENA.wallZ/2 + 2);
       scene.add(room);
 
-      // 💡 床にフローリングテクスチャを適用
-      const floorMat = new THREE.MeshStandardMaterial({ map: texFloor(), roughness: 0.7, metalness: 0.05 });
+      // 💡 マットな単色の床に変更（チカチカする原因となるテクスチャを排除）
+      const floorMat = new THREE.MeshStandardMaterial({ color: 0x3d3530, roughness: 1.0, metalness: 0.0 });
       const floor = new THREE.Mesh(new THREE.PlaneGeometry(30, 30), floorMat);
       floor.rotation.x = -Math.PI / 2;
       floor.position.y = ARENA.floorY;
@@ -194,25 +183,21 @@
       scene.add(floor);
 
       const pedH = ARENA.readyPos.y;
-      // 💡 台座を木製の丸テーブル風に変更
       const pedestal = new THREE.Mesh(new THREE.CylinderGeometry(0.25, 0.25, pedH, 16), new THREE.MeshStandardMaterial({ color: 0x5c3a21, roughness: 0.9 }));
       pedestal.position.set(ARENA.readyPos.x, ARENA.floorY + pedH/2, ARENA.readyPos.z);
       pedestal.castShadow = true; pedestal.receiveShadow = true;
       scene.add(pedestal);
 
-      // 💡 宇宙空間のような塵パーティクルを削除
       ambientParticles = null;
     }
 
     function setupLighting() {
-      // 💡 落ち着いた間接照明のような暖かい光に変更
       scene.add(new THREE.AmbientLight(0xffe6cc, 0.3));
       const mainSpot = new THREE.SpotLight(0xffd6aa, 1.2); 
       mainSpot.position.set(0, 5.8, 0); mainSpot.target.position.set(0, 0, ARENA.wallZ/2);
       mainSpot.angle = Math.PI/2.5; mainSpot.penumbra = 0.7; mainSpot.castShadow = true;
       scene.add(mainSpot); scene.add(mainSpot.target);
       
-      // 💡 空間の奥行きを出すために、青みがかった弱いリムライトを追加
       const rim = new THREE.PointLight(0x5577aa, 0.6, 15); rim.position.set(-3, 3, -2); scene.add(rim);
     }
 
@@ -223,11 +208,9 @@
       }
 
       for (let i = 0; i < 2; i++) {
-        // 1. 標準のコントローラー情報
         const controller = renderer.xr.getController(i);
         xrCameraSpace.add(controller);
         
-        // コントローラー用の代替メッシュ
         const handGroup = new THREE.Group();
         const palm = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.02, 0.1), new THREE.MeshStandardMaterial({color: 0x222222, metalness: 0.8, roughness: 0.2}));
         const core = new THREE.Mesh(new THREE.SphereGeometry(0.025, 16, 16), new THREE.MeshStandardMaterial({color: i===0?0xff3333:0x3388ff, emissive: i===0?0xff3333:0x3388ff, emissiveIntensity: 0.8}));
@@ -238,10 +221,8 @@
         controller.userData.velocity = new THREE.Vector3(); 
         controller.userData.prevPositions = [];
 
-        // 接続時にハンドトラッキングかどうか判定
         controller.addEventListener('connected', function(e) { 
           this.userData.inputSource = e.data; 
-          // 手が認識された場合は、標準の代替メッシュ(箱と球)を隠す
           if (e.data.hand) {
             handGroup.visible = false;
           } else {
@@ -249,25 +230,19 @@
           }
         });
 
-        // 2. ハンドトラッキングモデルの追加
         const hand = renderer.xr.getHand(i);
         if (handModelFactory) {
-          // 外部GLTFに依存せず確実に描画される "spheres"（球体の関節モデル）を使用
           const handModel = handModelFactory.createHandModel(hand, "spheres");
           hand.add(handModel);
         }
         xrCameraSpace.add(hand);
 
-        // --- インタラクションイベント（コントローラーと手、両方で発火します） ---
-        
-        // トリガーを引く、または親指と人差し指でつまむ（ピンチ）動作
         controller.addEventListener('selectstart', (e) => {
           const ctrl = e.target;
           if (readyPot && !readyPot.isGrabbed) {
             const ctrlPos = new THREE.Vector3(); ctrl.getWorldPosition(ctrlPos);
             const potPos = new THREE.Vector3(); readyPot.mesh.getWorldPosition(potPos);
             
-            // 手の位置（またはコントローラー位置）と鉢の距離判定
             if (ctrlPos.distanceTo(potPos) < 0.4) {
               readyPot.isGrabbed = true; ctrl.userData.grabbedPot = readyPot;
               ctrl.attach(readyPot.mesh);
@@ -276,7 +251,6 @@
           }
         });
 
-        // トリガーを離す、またはつまむのをやめる（リリース）動作
         controller.addEventListener('selectend', (e) => {
           const ctrl = e.target;
           if (ctrl.userData.grabbedPot) {
@@ -295,7 +269,6 @@
           }
         });
 
-        // グリップボタンを押す、または手を握る（グーの形）動作
         controller.addEventListener('squeezestart', (e) => {
           const ctrl = e.target; 
           if (i === 1) { 
