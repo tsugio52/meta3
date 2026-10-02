@@ -53,7 +53,7 @@
       floorY: 0,        
       sideX: 6.0,       
       ceilY: 6.0,       
-      readyPos: new THREE.Vector3(0, 0.85, -0.75) 
+      readyPos: new THREE.Vector3(0, 0.85, -1.0) 
     };
     
     const GRAVITY = -9.8; 
@@ -243,7 +243,8 @@
             const ctrlPos = new THREE.Vector3(); ctrl.getWorldPosition(ctrlPos);
             const potPos = new THREE.Vector3(); readyPot.mesh.getWorldPosition(potPos);
             
-            if (ctrlPos.distanceTo(potPos) < 0.4) {
+            // 💡 掴む判定の距離を少し広げて、掴みやすくしました（0.4 -> 0.5）
+            if (ctrlPos.distanceTo(potPos) < 0.5) {
               readyPot.isGrabbed = true; ctrl.userData.grabbedPot = readyPot;
               ctrl.attach(readyPot.mesh);
               triggerHaptics(ctrl, 0.5, 30);
@@ -257,8 +258,8 @@
             const pot = ctrl.userData.grabbedPot; pot.isGrabbed = false; ctrl.userData.grabbedPot = null;
             scene.attach(pot.mesh);
             
-            const vel = ctrl.userData.velocity.clone().multiplyScalar(2.0); 
-            if (vel.lengthSq() < 0.5) vel.set(0, 0, 0); 
+            // 💡 投げる力の倍率を上げ（2.0 -> 3.0）、速度が遅いと下に落ちる原因となっていたしきい値を削除しました
+            const vel = ctrl.userData.velocity.clone().multiplyScalar(3.0); 
             
             flyingPots.push({ mesh: pot.mesh, bodyMat: pot.bodyMat, soilMat: pot.soilMat, leafMat: pot.leafMat, type: pot.type, vel: vel, angVel: new THREE.Vector3((Math.random()-0.5)*15, (Math.random()-0.5)*15, (Math.random()-0.5)*15) });
             readyPot = null;
@@ -290,7 +291,8 @@
       xrControllers.forEach(c => {
         const pos = new THREE.Vector3(); c.getWorldPosition(pos);
         c.userData.prevPositions.push({ pos: pos.clone(), time: performance.now() });
-        if (c.userData.prevPositions.length > 5) c.userData.prevPositions.shift();
+        // 💡 速度計算のサンプルフレームを少し増やして（5 -> 8）、手の軌跡のブレを吸収します
+        if (c.userData.prevPositions.length > 8) c.userData.prevPositions.shift();
         if (c.userData.prevPositions.length >= 2) {
           const dt = (c.userData.prevPositions[c.userData.prevPositions.length-1].time - c.userData.prevPositions[0].time) / 1000;
           if (dt > 0) c.userData.velocity.copy(c.userData.prevPositions[c.userData.prevPositions.length-1].pos).sub(c.userData.prevPositions[0].pos).divideScalar(dt);
