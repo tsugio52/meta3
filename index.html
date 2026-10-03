@@ -56,8 +56,8 @@
       floorY: 0,        
       sideX: 6.0,       
       ceilY: 6.0,       
-      // 💡 台を目の前（すぐ手が届く位置）に配置
-      readyPos: new THREE.Vector3(0.0, 0.85, -0.4) 
+      // 💡 台をちょうど手が届きやすい距離に再調整（-0.4は近すぎ、-1.3は遠すぎたため）
+      readyPos: new THREE.Vector3(0.0, 0.85, -0.6) 
     };
     
     const GRAVITY = -9.8; 
@@ -234,25 +234,11 @@
           }
         });
 
-        // 💡 外部モデルのダウンロード失敗を防ぐため、内蔵の "boxes" (ブロックの集まり) を使用し、
-        // 半透明のマテリアルに変更して「ホログラム風のシルエット」に見せる
         const hand = renderer.xr.getHand(i);
         if (handModelFactory) {
-          const handModel = handModelFactory.createHandModel(hand, "boxes");
-          
-          // モデル内のすべてのブロックを半透明なサイバー風に変更
-          handModel.traverse(child => {
-            if (child.isMesh) {
-              child.material = new THREE.MeshBasicMaterial({ 
-                color: i === 0 ? 0xff4444 : 0x4488ff, // 右手は赤系、左手は青系
-                transparent: true, 
-                opacity: 0.45,
-                wireframe: false
-              });
-              // ブロックを少し太らせて隙間を減らす
-              child.scale.setScalar(1.2); 
-            }
-          });
+          // 💡 独自ブロック表現をやめ、公式のスムーズなハンドモデル（メッシュ）をそのまま使用する
+          // これで他のプログラム同様に綺麗な手が表示されます
+          const handModel = handModelFactory.createHandModel(hand, "mesh");
           hand.add(handModel);
         }
         xrCameraSpace.add(hand);
@@ -308,33 +294,23 @@
     function handleAutoGrabAndThrow() {
       const now = performance.now();
       xrControllers.forEach((ctrl, i) => {
-        const hand = renderer.xr.getHand(i);
         const ctrlPos = new THREE.Vector3(); 
         
-        // 手のひらの位置を正確に取得する
-        let usedHand = false;
-        if (hand && hand.joints && hand.joints['middle-finger-metacarpal']) {
-            const joint = hand.joints['middle-finger-metacarpal'];
-            if (joint.visible) {
-                joint.getWorldPosition(ctrlPos);
-                usedHand = true;
-            }
-        }
-        if (!usedHand) {
-            ctrl.getWorldPosition(ctrlPos);
-        }
+        // 💡 複雑な関節データ取得をやめ、コントローラーの安定した基準位置を手のひら位置として使用
+        ctrl.getWorldPosition(ctrlPos);
 
         // --- 自動吸着（手を添えるだけで持つ） ---
         if (readyPot && !readyPot.isGrabbed && !ctrl.userData.grabbedPot) {
           const potPos = new THREE.Vector3(); 
           readyPot.mesh.getWorldPosition(potPos);
           
-          // 距離が30cm以内なら吸着
-          if (ctrlPos.distanceTo(potPos) < 0.3) {
+          // 💡 距離が20cm以内なら吸着（遠すぎず、近すぎない適切な距離）
+          if (ctrlPos.distanceTo(potPos) < 0.20) {
             readyPot.isGrabbed = true; 
             ctrl.userData.grabbedPot = readyPot;
             ctrl.userData.grabTime = now;
             
+            // 手のひらの位置にそのままの角度で吸着させる
             ctrl.attach(readyPot.mesh);
             triggerHaptics(ctrl, 0.5, 30);
           }
