@@ -206,19 +206,15 @@
 
     function setupXRControllers() {
       let handModelFactory = null;
-      try {
-        if (typeof THREE.XRHandModelFactory === 'function') {
-          handModelFactory = new THREE.XRHandModelFactory();
-        }
-      } catch (e) {
-        console.warn("HandModelFactory initialization failed.", e);
+      if (typeof THREE.XRHandModelFactory !== 'undefined') {
+        handModelFactory = new THREE.XRHandModelFactory();
       }
 
       for (let i = 0; i < 2; i++) {
         const controller = renderer.xr.getController(i);
         xrCameraSpace.add(controller);
         
-        // コントローラー用の代替メッシュ（ハンドトラッキング非対応時）
+        // コントローラー用の代替メッシュ
         const handGroup = new THREE.Group();
         const palm = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.02, 0.1), new THREE.MeshStandardMaterial({color: 0x222222, metalness: 0.8, roughness: 0.2}));
         const core = new THREE.Mesh(new THREE.SphereGeometry(0.025, 16, 16), new THREE.MeshStandardMaterial({color: i===0?0xff3333:0x3388ff, emissive: i===0?0xff3333:0x3388ff, emissiveIntensity: 0.8}));
@@ -229,17 +225,18 @@
         controller.userData.velocity = new THREE.Vector3(); 
         controller.userData.prevPositions = [];
 
+        // 接続時にハンドトラッキングかどうか判定
         controller.addEventListener('connected', function(e) { 
           this.userData.inputSource = e.data; 
-          // ハンドトラッキングが有効かつハンドモデルの生成に成功している場合のみ代替メッシュを隠す
-          if (e.data.hand && handModelFactory) {
+          // 手が認識された場合は代替メッシュを隠す
+          if (e.data.hand) {
             handGroup.visible = false;
           } else {
             handGroup.visible = true;
           }
         });
 
-        // 標準のハンドメッシュをアタッチ
+        // 💡 ユーザーの要望通り「スムーズな手のモデル」("mesh") を使用
         const hand = renderer.xr.getHand(i);
         if (handModelFactory) {
           const handModel = handModelFactory.createHandModel(hand, "mesh");
@@ -248,8 +245,9 @@
         xrCameraSpace.add(hand);
 
         // --- インタラクションイベント ---
-        
-        // 握る（グリップ）動作
+        // 💡 ピンチ(select)による掴む動作は廃止し、手を近づけるだけの自動吸着に任せるため削除しました。
+
+        // グリップボタンを押す、または手を握る（グーの形）動作
         controller.addEventListener('squeezestart', (e) => {
           const ctrl = e.target; 
           // 💡 鉢を掴んでいる最中は誤爆を防ぐためスキップ
@@ -273,53 +271,42 @@
       xrControllers.forEach(c => {
         const pos = new THREE.Vector3(); c.getWorldPosition(pos);
         c.userData.prevPositions.push({ pos: pos.clone(), time: performance.now() });
-        // 💡 履歴を10フレーム分に延ばす
-        if (c.userData.prevPositions.length > 10) c.userData.prevPositions.shift();
-        
+        // 💡 履歴を5フレーム分（約0.08秒）に短縮し、減速する前の「振っている最中」の最高速度を拾いやすくする
+        if (c.userData.prevPositions.length > 5) c.userData.prevPositions.shift();
         if (c.userData.prevPositions.length >= 2) {
-          let maxSpeed = 0;
-          let maxVel = new THREE.Vector3();
-          const hist = c.userData.prevPositions;
-          
-          // 💡 ピンチを離す直前に手が止まってしまう（減速する）のを防ぐため、
-          // 直近の履歴の中で「一番勢いよく振っていた時の速度」を採用する
-          for(let j = 1; j < hist.length; j++) {
-            const dt = (hist[j].time - hist[j-1].time) / 1000;
-            if(dt > 0) {
-              const v = hist[j].pos.clone().sub(hist[j-1].pos).divideScalar(dt);
-              if(v.length() > maxSpeed) {
-                maxSpeed = v.length();
-                maxVel.copy(v);
-              }
-            }
-          }
-          c.userData.velocity.copy(maxVel);
+          const dt = (c.userData.prevPositions[c.userData.prevPositions.length-1].time - c.userData.prevPositions[0].time) / 1000;
+          if (dt > 0) c.userData.velocity.copy(c.userData.prevPositions[c.userData.prevPositions.length-1].pos).sub(c.userData.prevPositions[0].pos).divideScalar(dt);
         }
       });
     }
 
     function handleAutoGrabAndThrow() {
+      const now = performance.now();
       xrControllers.forEach(ctrl => {
-        // --- 自動吸着（つかむ） ---
+        // --- 自動吸着（手を添えるだけで持つ） ---
         if (readyPot && !readyPot.isGrabbed && !ctrl.userData.grabbedPot) {
           const ctrlPos = new THREE.Vector3(); ctrl.getWorldPosition(ctrlPos);
           const potPos = new THREE.Vector3(); readyPot.mesh.getWorldPosition(potPos);
           
-          // 距離が20cm以内なら無条件で吸着（手で触れるだけで持つ）
+          // 距離が20cm以内なら無条件で吸着
           if (ctrlPos.distanceTo(potPos) < 0.2) {
             readyPot.isGrabbed = true; 
             ctrl.userData.grabbedPot = readyPot;
-            ctrl.attach(readyPot.mesh); // 触れた位置のままくっつく
+            ctrl.userData.grabTime = now; // 掴んだ時間を記録
+            
+            // 💡 attachを使うことで、鉢がワープせず「手を添えた位置と角度」のまま手にくっつく
+            ctrl.attach(readyPot.mesh);
             triggerHaptics(ctrl, 0.5, 30);
           }
         }
         
-        // --- 自動投擲（なげる） ---
+        // --- 自動投擲（手を振ると離れる） ---
         if (ctrl.userData.grabbedPot) {
           const pot = ctrl.userData.grabbedPot;
+          const speed = ctrl.userData.velocity.length();
           
-          // 手を一定の速度（2.5以上）で振ったら、自動的に手が離れて飛んでいく
-          if (ctrl.userData.velocity.length() > 2.5) {
+          // 💡 掴んだ瞬間の誤射を防ぐため、掴んでから0.3秒(300ms)経過 ＆ 手を一定の速度(1.5以上)で振ったら離す
+          if (now - ctrl.userData.grabTime > 300 && speed > 1.5) {
             pot.isGrabbed = false; 
             ctrl.userData.grabbedPot = null;
             scene.attach(pot.mesh); // 空間の座標系に戻す
@@ -332,8 +319,8 @@
             flyingPots.push({ mesh: pot.mesh, bodyMat: pot.bodyMat, soilMat: pot.soilMat, leafMat: pot.leafMat, type: pot.type, vel: vel, angVel: new THREE.Vector3((Math.random()-0.5)*15, (Math.random()-0.5)*15, (Math.random()-0.5)*15) });
             readyPot = null; 
             
-            triggerHaptics(ctrl, Math.min(vel.length()/15, 1.0), 60);
-            playSound('whoosh', vel.length()/10);
+            triggerHaptics(ctrl, Math.min(speed/5, 1.0), 60);
+            playSound('whoosh', speed/10);
             setTimeout(spawnReadyPot, 600);
           }
         }
@@ -521,7 +508,7 @@
       const dt = Math.min(clock.getDelta(), 0.1);
       if(renderer.xr.isPresenting) {
         trackControllerVelocities();
-        handleAutoGrabAndThrow(); // 近接でくっつく＆振って投げる処理
+        handleAutoGrabAndThrow(); // 💡 自動吸着と投擲のロジックを毎フレーム呼び出し
       }
       stepPhysics(dt);
       renderer.render(scene, camera);
