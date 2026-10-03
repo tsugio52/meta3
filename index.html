@@ -236,31 +236,30 @@
         // 2. ハンドトラッキングモデルの追加
         const hand = renderer.xr.getHand(i);
         if (handModelFactory) {
-          // 💡 "spheres" の代わりに "mesh" を使用し、手の3Dモデルを表示する
-          const handModel = handModelFactory.createHandModel(hand, "mesh");
+          // 💡 外部モデルの読み込みエラーを回避するため "spheres" ベースに戻しつつ、
+          // 球のサイズを大きく太らせて隙間を埋め、「半透明の手袋（シルエット）」のように見せます。
+          const handModel = handModelFactory.createHandModel(hand, "spheres");
           hand.add(handModel);
 
-          // モデルが非同期でロードされるため、定期的にチェックしてマテリアルをシルエット風に書き換える
+          // 球体が生成されたらマテリアルとサイズを上書き
           const checkTimer = setInterval(() => {
-            let meshFound = false;
+            let spheresFound = false;
             handModel.traverse(child => {
-              if (child.isMesh && child.material) {
-                meshFound = true;
-                // シルエット（ホログラム）風の半透明マテリアルに差し替え
+              if (child.isMesh) {
+                spheresFound = true;
                 child.material = new THREE.MeshStandardMaterial({
-                  color: i === 0 ? 0xff4444 : 0x44aaff,
+                  color: i === 0 ? 0xff5555 : 0x55aaff,
                   transparent: true,
-                  opacity: 0.65,
-                  roughness: 0.2,
-                  metalness: 0.8,
-                  emissive: i === 0 ? 0xaa2222 : 0x2255aa,
-                  emissiveIntensity: 0.6
+                  opacity: 0.6,
+                  roughness: 0.1,
+                  emissive: i === 0 ? 0xcc2222 : 0x2255cc,
+                  emissiveIntensity: 0.5
                 });
+                // 💡 通常の関節球より約1.8倍大きくして融合させる
+                child.scale.setScalar(1.8);
               }
             });
-            if (meshFound) {
-              clearInterval(checkTimer);
-            }
+            if (spheresFound) clearInterval(checkTimer);
           }, 300);
         }
         xrCameraSpace.add(hand);
@@ -300,20 +299,23 @@
             const potPos = new THREE.Vector3(); 
             pot.mesh.getWorldPosition(potPos);
             
-            if (potPos.distanceTo(ARENA.readyPos) < 0.25 && ctrl.userData.velocity.length() < 1.5) {
+            // 💡 台座に戻す条件をより厳しく：距離25cm以内 かつ 投げるスピードが完全に止まっている(1.0未満)場合
+            if (potPos.distanceTo(ARENA.readyPos) < 0.25 && ctrl.userData.velocity.length() < 1.0) {
               pot.mesh.position.copy(ARENA.readyPos);
               pot.mesh.rotation.set(0, 0, 0);
               triggerHaptics(ctrl, 0.2, 20);
             } else {
-              const vel = ctrl.userData.velocity.clone().multiplyScalar(3.5);
-              vel.y += 1.5; 
-              vel.z -= 1.0; 
+              // 💡 投げるアシストを大幅に強化（下に落ちるだけの現象を解消）
+              // 人間が指を離す瞬間の減速をカバーするため、速度を5倍にし、さらに上・奥へ強制的な初速を加算
+              const vel = ctrl.userData.velocity.clone().multiplyScalar(5.0);
+              vel.y += 2.0; // 上向きにふわりと浮かせるアシスト
+              vel.z -= 3.0; // 前（奥）方向に確実に飛ばすアシスト
               
               flyingPots.push({ mesh: pot.mesh, bodyMat: pot.bodyMat, soilMat: pot.soilMat, leafMat: pot.leafMat, type: pot.type, vel: vel, angVel: new THREE.Vector3((Math.random()-0.5)*15, (Math.random()-0.5)*15, (Math.random()-0.5)*15) });
               readyPot = null;
               
               triggerHaptics(ctrl, Math.min(vel.length()/15, 1.0), 60);
-              playSound('whoosh', vel.length()/10);
+              playSound('whoosh', Math.min(vel.length()/10, 1.0));
               setTimeout(spawnReadyPot, 600);
             }
           }
@@ -341,10 +343,27 @@
       xrControllers.forEach(c => {
         const pos = new THREE.Vector3(); c.getWorldPosition(pos);
         c.userData.prevPositions.push({ pos: pos.clone(), time: performance.now() });
-        if (c.userData.prevPositions.length > 5) c.userData.prevPositions.shift();
+        // 💡 履歴を10フレーム分に延ばす
+        if (c.userData.prevPositions.length > 10) c.userData.prevPositions.shift();
+        
         if (c.userData.prevPositions.length >= 2) {
-          const dt = (c.userData.prevPositions[c.userData.prevPositions.length-1].time - c.userData.prevPositions[0].time) / 1000;
-          if (dt > 0) c.userData.velocity.copy(c.userData.prevPositions[c.userData.prevPositions.length-1].pos).sub(c.userData.prevPositions[0].pos).divideScalar(dt);
+          let maxSpeed = 0;
+          let maxVel = new THREE.Vector3();
+          const hist = c.userData.prevPositions;
+          
+          // 💡 ピンチを離す直前に手が止まってしまう（減速する）のを防ぐため、
+          // 直近の履歴の中で「一番勢いよく振っていた時の速度」を採用する
+          for(let j = 1; j < hist.length; j++) {
+            const dt = (hist[j].time - hist[j-1].time) / 1000;
+            if(dt > 0) {
+              const v = hist[j].pos.clone().sub(hist[j-1].pos).divideScalar(dt);
+              if(v.length() > maxSpeed) {
+                maxSpeed = v.length();
+                maxVel.copy(v);
+              }
+            }
+          }
+          c.userData.velocity.copy(maxVel);
         }
       });
     }
