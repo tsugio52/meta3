@@ -6,6 +6,7 @@
   <title>Pottery Smash VR: True Immersive</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/webxr/XRHandModelFactory.js"></script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
   
@@ -53,7 +54,6 @@
       floorY: 0,        
       sideX: 6.0,       
       ceilY: 6.0,       
-      // 💡 Xを0.3(右へ30cm)、Zを-1.3(奥へさらに30cm)に変更
       readyPos: new THREE.Vector3(0.3, 0.85, -1.3) 
     };
     
@@ -175,11 +175,9 @@
       room.position.set(0, ARENA.ceilY/2, ARENA.wallZ/2 + 2);
       scene.add(room);
 
-      // 💡 マットな単色の床に変更
       const floorMat = new THREE.MeshStandardMaterial({ color: 0x3d3530, roughness: 1.0, metalness: 0.0 });
       const floor = new THREE.Mesh(new THREE.PlaneGeometry(30, 30), floorMat);
       floor.rotation.x = -Math.PI / 2;
-      // 💡 Zファイティング（ちらつき）防止のため、部屋の底面よりわずかに(1cm)上に配置
       floor.position.y = ARENA.floorY + 0.01;
       floor.receiveShadow = true;
       scene.add(floor);
@@ -213,7 +211,7 @@
         const controller = renderer.xr.getController(i);
         xrCameraSpace.add(controller);
         
-        // コントローラー用の代替メッシュ
+        // コントローラー用の代替メッシュ（ハンドトラッキング非対応デバイス用）
         const handGroup = new THREE.Group();
         const palm = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.02, 0.1), new THREE.MeshStandardMaterial({color: 0x222222, metalness: 0.8, roughness: 0.2}));
         const core = new THREE.Mesh(new THREE.SphereGeometry(0.025, 16, 16), new THREE.MeshStandardMaterial({color: i===0?0xff3333:0x3388ff, emissive: i===0?0xff3333:0x3388ff, emissiveIntensity: 0.8}));
@@ -238,9 +236,32 @@
         // 2. ハンドトラッキングモデルの追加
         const hand = renderer.xr.getHand(i);
         if (handModelFactory) {
-          // 外部GLTFに依存せず確実に描画される "spheres"（球体の関節モデル）を使用
-          const handModel = handModelFactory.createHandModel(hand, "spheres");
+          // 💡 "spheres" の代わりに "mesh" を使用し、手の3Dモデルを表示する
+          const handModel = handModelFactory.createHandModel(hand, "mesh");
           hand.add(handModel);
+
+          // モデルが非同期でロードされるため、定期的にチェックしてマテリアルをシルエット風に書き換える
+          const checkTimer = setInterval(() => {
+            let meshFound = false;
+            handModel.traverse(child => {
+              if (child.isMesh && child.material) {
+                meshFound = true;
+                // シルエット（ホログラム）風の半透明マテリアルに差し替え
+                child.material = new THREE.MeshStandardMaterial({
+                  color: i === 0 ? 0xff4444 : 0x44aaff,
+                  transparent: true,
+                  opacity: 0.65,
+                  roughness: 0.2,
+                  metalness: 0.8,
+                  emissive: i === 0 ? 0xaa2222 : 0x2255aa,
+                  emissiveIntensity: 0.6
+                });
+              }
+            });
+            if (meshFound) {
+              clearInterval(checkTimer);
+            }
+          }, 300);
         }
         xrCameraSpace.add(hand);
 
@@ -253,15 +274,14 @@
             const ctrlPos = new THREE.Vector3(); ctrl.getWorldPosition(ctrlPos);
             const potPos = new THREE.Vector3(); readyPot.mesh.getWorldPosition(potPos);
             
-            // 💡 手を伸ばしてある程度近づいたら（距離 1.0 以内）アバウトに掴めるように判定を大幅に拡大
+            // 距離1.0以内でアバウトに掴める
             if (ctrlPos.distanceTo(potPos) < 1.0) {
               readyPot.isGrabbed = true; 
               ctrl.userData.grabbedPot = readyPot;
               
-              // 💡 掴んだ瞬間に、鉢と手の距離（オフセット）をなくし、手の中にピタッと吸着させる
               ctrl.add(readyPot.mesh);
               readyPot.mesh.position.set(0, -0.05, -0.05); // 手のひらにちょうど収まる位置
-              readyPot.mesh.rotation.set(0, 0, 0); // 傾きもリセットして綺麗に持つ
+              readyPot.mesh.rotation.set(0, 0, 0);
               
               triggerHaptics(ctrl, 0.5, 30);
             }
@@ -275,25 +295,22 @@
             const pot = ctrl.userData.grabbedPot; 
             pot.isGrabbed = false; 
             ctrl.userData.grabbedPot = null;
-            scene.attach(pot.mesh); // ワールド座標系（空間）に鉢を戻す
+            scene.attach(pot.mesh); // 空間に戻す
             
             const potPos = new THREE.Vector3(); 
             pot.mesh.getWorldPosition(potPos);
             
-            // 💡 台座に戻す条件を厳しく：半径25cm以内 かつ 投げるスピードが遅い(1.5未満)場合のみ「置く」と判定
             if (potPos.distanceTo(ARENA.readyPos) < 0.25 && ctrl.userData.velocity.length() < 1.5) {
               pot.mesh.position.copy(ARENA.readyPos);
               pot.mesh.rotation.set(0, 0, 0);
-              // readyPot をそのまま維持するので、再度掴むことができます
               triggerHaptics(ctrl, 0.2, 20);
             } else {
-              // 💡 投げる（VRでの指を開く遅れを補正するため、速度を3.5倍にしつつ、少し上・奥方向にアシスト）
               const vel = ctrl.userData.velocity.clone().multiplyScalar(3.5);
-              vel.y += 1.5; // 少し上向きにアシスト（ボトッと手前に落ちるのを防ぐ）
-              vel.z -= 1.0; // 少し奥方向にアシスト
+              vel.y += 1.5; 
+              vel.z -= 1.0; 
               
               flyingPots.push({ mesh: pot.mesh, bodyMat: pot.bodyMat, soilMat: pot.soilMat, leafMat: pot.leafMat, type: pot.type, vel: vel, angVel: new THREE.Vector3((Math.random()-0.5)*15, (Math.random()-0.5)*15, (Math.random()-0.5)*15) });
-              readyPot = null; // 投げたので手元の鉢は無しにする
+              readyPot = null;
               
               triggerHaptics(ctrl, Math.min(vel.length()/15, 1.0), 60);
               playSound('whoosh', vel.length()/10);
@@ -324,7 +341,6 @@
       xrControllers.forEach(c => {
         const pos = new THREE.Vector3(); c.getWorldPosition(pos);
         c.userData.prevPositions.push({ pos: pos.clone(), time: performance.now() });
-        // 💡 履歴を5フレーム分（約0.08秒）に短縮し、減速する前の「振っている最中」の最高速度を拾いやすくする
         if (c.userData.prevPositions.length > 5) c.userData.prevPositions.shift();
         if (c.userData.prevPositions.length >= 2) {
           const dt = (c.userData.prevPositions[c.userData.prevPositions.length-1].time - c.userData.prevPositions[0].time) / 1000;
