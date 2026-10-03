@@ -49,6 +49,7 @@
     let shards = [], towerBlocks = [], ambientParticles;
     
     let xrControllers = [], xrCameraSpace;
+    let handBones = [];
     let audioEnabled = true, audioCtx = null, activePotType = 'terracotta';
 
     const ARENA = { 
@@ -205,16 +206,11 @@
     }
 
     function setupXRControllers() {
-      let handModelFactory = null;
-      if (typeof THREE.XRHandModelFactory !== 'undefined') {
-        handModelFactory = new THREE.XRHandModelFactory();
-      }
-
       for (let i = 0; i < 2; i++) {
         const controller = renderer.xr.getController(i);
         xrCameraSpace.add(controller);
         
-        // コントローラー用の代替メッシュ
+        // 代替のコントローラーメッシュ（ハンドトラッキング無効時用）
         const handGroup = new THREE.Group();
         const palm = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.02, 0.1), new THREE.MeshStandardMaterial({color: 0x222222, metalness: 0.8, roughness: 0.2}));
         const core = new THREE.Mesh(new THREE.SphereGeometry(0.025, 16, 16), new THREE.MeshStandardMaterial({color: i===0?0xff3333:0x3388ff, emissive: i===0?0xff3333:0x3388ff, emissiveIntensity: 0.8}));
@@ -227,26 +223,39 @@
 
         controller.addEventListener('connected', function(e) { 
           this.userData.inputSource = e.data; 
+        });
+
+        // 💡 外部モデル読込エラーを回避するため、独自に「手の輪郭」を描画する
+        const hand = renderer.xr.getHand(i);
+        xrCameraSpace.add(hand);
+
+        // 1. 関節の玉（ご要望に合わせて半径8ミリの極小サイズにし、邪魔にならないように）
+        const jointGeo = new THREE.SphereGeometry(0.008, 12, 12); 
+        const jointMat = new THREE.MeshStandardMaterial({ color: i===0?0xff5555:0x5599ff, roughness: 0.2, metalness: 0.8 });
+        
+        let jointsMeshAdded = false;
+        hand.addEventListener('connected', (e) => {
           if (e.data.hand) {
-            handGroup.visible = false;
+            handGroup.visible = false; 
+            // 接続時に、内部の25個の関節すべてに小さな球を配置
+            if (!jointsMeshAdded) {
+              hand.children.forEach(joint => { joint.add(new THREE.Mesh(jointGeo, jointMat)); });
+              jointsMeshAdded = true;
+            }
           } else {
             handGroup.visible = true;
           }
         });
 
-        const hand = renderer.xr.getHand(i);
-        if (handModelFactory) {
-          // 💡 独自ブロック表現をやめ、公式のスムーズなハンドモデル（メッシュ）をそのまま使用する
-          // これで他のプログラム同様に綺麗な手が表示されます
-          const handModel = handModelFactory.createHandModel(hand, "mesh");
-          hand.add(handModel);
-        }
-        xrCameraSpace.add(hand);
+        // 2. 玉同士を繋ぐワイヤーフレーム（手の輪郭線）を作成
+        const lineMat = new THREE.LineBasicMaterial({ color: i===0?0xff5555:0x5599ff, linewidth: 2, transparent: true, opacity: 0.6 });
+        const lineMesh = new THREE.LineSegments(new THREE.BufferGeometry(), lineMat);
+        scene.add(lineMesh);
+        handBones.push({ hand: hand, lineMesh: lineMesh });
 
         // グリップボタンを押す、または手を握る（グーの形）動作
         controller.addEventListener('squeezestart', (e) => {
           const ctrl = e.target; 
-          // 掴んでいる最中は変更しない
           if (ctrl.userData.grabbedPot) return;
 
           if (i === 1) { 
@@ -263,7 +272,98 @@
       }
     }
 
-    // 💡 コントローラーだけでなく、手のジョイント（手首）の位置を正確に追跡して速度を計算
+    // 指の骨格を繋ぐインデックス配列
+    const FINGER_INDICES = [
+      [0, 1], [1, 2], [2, 3], [3, 4], // 親指
+      [0, 5], [5, 6], [6, 7], [7, 8], [8, 9], // 人差し指
+      [0, 10], [10, 11], [11, 12], [12, 13], [13, 14], // 中指
+      [0, 15], [15, 16], [16, 17], [17, 18], [18, 19], // 薬指
+      [0, 20], [20, 21], [21, 22], [22, 23], [23, 24] // 小指
+    ];
+
+    function updateHandSkeletons() {
+      handBones.forEach(hb => {
+        const hand = hb.hand;
+        const lineMesh = hb.lineMesh;
+        
+        if (hand.children.length < 25) { lineMesh.visible = false; return; }
+
+        const tempPos1 = new THREE.Vector3();
+        hand.children[0].getWorldPosition(tempPos1);
+        // 手が認識から外れている時は非表示
+        if(tempPos1.lengthSq() < 0.01) { lineMesh.visible = false; return; }
+
+        lineMesh.visible = true;
+        const positions = [];
+        const tempPos2 = new THREE.Vector3();
+
+        FINGER_INDICES.forEach(pair => {
+          const j1 = hand.children[pair[0]]; const j2 = hand.children[pair[1]];
+          if (j1 && j2) {
+            j1.getWorldPosition(tempPos1); j2.getWorldPosition(tempPos2);
+            positions.push(tempPos1.x, tempPos1.y, tempPos1.z);
+            positions.push(tempPos2.x, tempPos2.y, tempPos2.z);
+          }
+        });
+        lineMesh.geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      });
+    }
+
+    function handleAutoGrabAndThrow() {
+      const now = performance.now();
+      xrControllers.forEach((ctrl, i) => {
+        const hand = renderer.xr.getHand(i);
+        const palmPos = new THREE.Vector3();
+        let useHand = false;
+        
+        // 手が認識されている場合、手のひら中心(中指の付け根)を判定基準にする
+        if (hand && hand.children.length >= 11) {
+            hand.children[10].getWorldPosition(palmPos);
+            if (palmPos.lengthSq() > 0.01) useHand = true;
+        }
+        if (!useHand) { ctrl.getWorldPosition(palmPos); }
+
+        // --- 自動吸着（手を添えるだけで持つ） ---
+        if (readyPot && !readyPot.isGrabbed && !ctrl.userData.grabbedPot) {
+          const potPos = new THREE.Vector3(); 
+          readyPot.mesh.getWorldPosition(potPos);
+          
+          // 半径20cm以内で確実に吸着
+          if (palmPos.distanceTo(potPos) < 0.20) {
+            readyPot.isGrabbed = true; 
+            ctrl.userData.grabbedPot = readyPot;
+            ctrl.userData.grabTime = now;
+            
+            ctrl.attach(readyPot.mesh);
+            triggerHaptics(ctrl, 0.5, 30);
+          }
+        }
+        
+        // --- 自動投擲（手を振ると離れる） ---
+        if (ctrl.userData.grabbedPot) {
+          const pot = ctrl.userData.grabbedPot;
+          const speed = ctrl.userData.velocity.length();
+          
+          if (now - ctrl.userData.grabTime > 300 && speed > 1.2) {
+            pot.isGrabbed = false; 
+            ctrl.userData.grabbedPot = null;
+            scene.attach(pot.mesh); 
+            
+            const vel = ctrl.userData.velocity.clone().multiplyScalar(3.0);
+            vel.y += 1.0; 
+            vel.z -= 1.0; 
+            
+            flyingPots.push({ mesh: pot.mesh, bodyMat: pot.bodyMat, soilMat: pot.soilMat, leafMat: pot.leafMat, type: pot.type, vel: vel, angVel: new THREE.Vector3((Math.random()-0.5)*15, (Math.random()-0.5)*15, (Math.random()-0.5)*15) });
+            readyPot = null; 
+            
+            triggerHaptics(ctrl, Math.min(speed/5, 1.0), 60);
+            playSound('whoosh', speed/10);
+            setTimeout(spawnReadyPot, 600);
+          }
+        }
+      });
+    }
+
     function trackControllerVelocities() {
       xrControllers.forEach((c, i) => {
         const hand = renderer.xr.getHand(i);
@@ -521,9 +621,11 @@
 
     function animateFrame() {
       const dt = Math.min(clock.getDelta(), 0.1);
+      // 💡 ここから呼び出しが漏れていたため掴めなくなっていました（修正済み）
       if(renderer.xr.isPresenting) {
         trackControllerVelocities();
-        handleAutoGrabAndThrow(); // 💡 抜けていた処理を復活：毎フレーム吸着と投擲をチェック
+        updateHandSkeletons();
+        handleAutoGrabAndThrow();
       }
       stepPhysics(dt);
       renderer.render(scene, camera);
