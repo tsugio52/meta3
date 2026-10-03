@@ -7,6 +7,8 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/webxr/XRHandPrimitiveModel.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/webxr/XRHandMeshModel.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/webxr/XRHandModelFactory.js"></script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
   
@@ -33,7 +35,7 @@
     <div class="absolute bottom-10 left-1/2 -translate-x-1/2 glass-card px-6 py-4 rounded-2xl flex flex-col items-center pointer-events-auto max-w-sm w-full">
       <h3 class="text-amber-400 font-bold mb-2 text-sm"><i class="fa-solid fa-hands"></i> ハンドトラッキング＆VR操作ガイド</h3>
       <ul class="text-xs text-slate-300 space-y-1.5 w-full">
-        <li><span class="inline-block w-6 text-center text-white bg-white/10 rounded mr-1">👆</span> <b>トリガー / ピンチ(つまむ):</b> 鉢を掴む・投げる</li>
+        <li><span class="inline-block w-6 text-center text-white bg-white/10 rounded mr-1">✋</span> <b>手を近づける:</b> 自動で掴む / <b>手を振る:</b> 投げる</li>
         <li><span class="inline-block w-6 text-center text-white bg-white/10 rounded mr-1">✊</span> <b>右手グリップ / 握る:</b> 鉢の種類チェンジ</li>
         <li><span class="inline-block w-6 text-center text-white bg-white/10 rounded mr-1">✊</span> <b>左手グリップ / 握る:</b> 部屋の清掃＆タワー再建</li>
       </ul>
@@ -203,7 +205,15 @@
     }
 
     function setupXRControllers() {
-      // 💡 外部モデルローダー（XRHandModelFactory）への依存を完全に排除し、確実に描画させる
+      let handModelFactory = null;
+      try {
+        if (typeof THREE.XRHandModelFactory === 'function') {
+          handModelFactory = new THREE.XRHandModelFactory();
+        }
+      } catch (e) {
+        console.warn("HandModelFactory initialization failed.", e);
+      }
+
       for (let i = 0; i < 2; i++) {
         const controller = renderer.xr.getController(i);
         xrCameraSpace.add(controller);
@@ -221,90 +231,24 @@
 
         controller.addEventListener('connected', function(e) { 
           this.userData.inputSource = e.data; 
-          if (e.data.hand) {
+          // ハンドトラッキングが有効かつハンドモデルの生成に成功している場合のみ代替メッシュを隠す
+          if (e.data.hand && handModelFactory) {
             handGroup.visible = false;
           } else {
             handGroup.visible = true;
           }
         });
 
-        // 💡 自前で指の関節（25個）に発光する球体を配置して確実にシルエットを作る
+        // 標準のハンドメッシュをアタッチ
         const hand = renderer.xr.getHand(i);
+        if (handModelFactory) {
+          const handModel = handModelFactory.createHandModel(hand, "mesh");
+          hand.add(handModel);
+        }
         xrCameraSpace.add(hand);
-
-        const jointMat = new THREE.MeshStandardMaterial({
-          color: i === 0 ? 0xff5555 : 0x55aaff,
-          transparent: true, opacity: 0.6, roughness: 0.1,
-          emissive: i === 0 ? 0xcc2222 : 0x2255cc, emissiveIntensity: 0.6
-        });
-        // 💡 関節の玉を 2cm から 8ミリ (0.008) に小さくし、邪魔にならない標準的な点群UIに変更
-        const jointGeo = new THREE.SphereGeometry(0.008, 16, 16);
-
-        hand.addEventListener('connected', (e) => {
-          if (e.data.hand) {
-            // hand.children はシステムが生成した25個の指の関節空間
-            hand.children.forEach(joint => {
-              while(joint.children.length > 0) joint.remove(joint.children[0]);
-              joint.add(new THREE.Mesh(jointGeo, jointMat));
-            });
-          }
-        });
 
         // --- インタラクションイベント ---
         
-        // ピンチ（つまむ）動作
-        controller.addEventListener('selectstart', (e) => {
-          const ctrl = e.target;
-          if (readyPot && !readyPot.isGrabbed) {
-            const ctrlPos = new THREE.Vector3(); ctrl.getWorldPosition(ctrlPos);
-            const potPos = new THREE.Vector3(); readyPot.mesh.getWorldPosition(potPos);
-            
-            // 💡 距離判定を0.35(35cm)に少し緩和。台も近いので、鉢の横に手を添えるだけで掴めます
-            if (ctrlPos.distanceTo(potPos) < 0.35) {
-              readyPot.isGrabbed = true; 
-              ctrl.userData.grabbedPot = readyPot;
-              
-              // 💡 掴んだ瞬間に手の中にワープさせるのをやめ、触れた位置・角度のまま自然に「添えて持つ」
-              ctrl.attach(readyPot.mesh);
-              
-              triggerHaptics(ctrl, 0.5, 30);
-            }
-          }
-        });
-
-        // リリース（離す）動作
-        controller.addEventListener('selectend', (e) => {
-          const ctrl = e.target;
-          if (ctrl.userData.grabbedPot) {
-            const pot = ctrl.userData.grabbedPot; 
-            pot.isGrabbed = false; 
-            ctrl.userData.grabbedPot = null;
-            scene.attach(pot.mesh); // 空間の座標系に戻す
-            
-            const potPos = new THREE.Vector3(); 
-            pot.mesh.getWorldPosition(potPos);
-            
-            // 離したとき、台座の近く(30cm以内)で速度が遅ければ元の位置に戻す
-            if (potPos.distanceTo(ARENA.readyPos) < 0.3 && ctrl.userData.velocity.length() < 1.0) {
-              pot.mesh.position.copy(ARENA.readyPos);
-              pot.mesh.rotation.set(0, 0, 0);
-              triggerHaptics(ctrl, 0.2, 20);
-            } else {
-              // 投げるアシスト
-              const vel = ctrl.userData.velocity.clone().multiplyScalar(3.5);
-              vel.y += 1.0; 
-              vel.z -= 1.0; 
-              
-              flyingPots.push({ mesh: pot.mesh, bodyMat: pot.bodyMat, soilMat: pot.soilMat, leafMat: pot.leafMat, type: pot.type, vel: vel, angVel: new THREE.Vector3((Math.random()-0.5)*15, (Math.random()-0.5)*15, (Math.random()-0.5)*15) });
-              readyPot = null; 
-              
-              triggerHaptics(ctrl, Math.min(vel.length()/15, 1.0), 60);
-              playSound('whoosh', vel.length()/10);
-              setTimeout(spawnReadyPot, 600);
-            }
-          }
-        });
-
         // 握る（グリップ）動作
         controller.addEventListener('squeezestart', (e) => {
           const ctrl = e.target; 
@@ -350,6 +294,48 @@
             }
           }
           c.userData.velocity.copy(maxVel);
+        }
+      });
+    }
+
+    function handleAutoGrabAndThrow() {
+      xrControllers.forEach(ctrl => {
+        // --- 自動吸着（つかむ） ---
+        if (readyPot && !readyPot.isGrabbed && !ctrl.userData.grabbedPot) {
+          const ctrlPos = new THREE.Vector3(); ctrl.getWorldPosition(ctrlPos);
+          const potPos = new THREE.Vector3(); readyPot.mesh.getWorldPosition(potPos);
+          
+          // 距離が20cm以内なら無条件で吸着（手で触れるだけで持つ）
+          if (ctrlPos.distanceTo(potPos) < 0.2) {
+            readyPot.isGrabbed = true; 
+            ctrl.userData.grabbedPot = readyPot;
+            ctrl.attach(readyPot.mesh); // 触れた位置のままくっつく
+            triggerHaptics(ctrl, 0.5, 30);
+          }
+        }
+        
+        // --- 自動投擲（なげる） ---
+        if (ctrl.userData.grabbedPot) {
+          const pot = ctrl.userData.grabbedPot;
+          
+          // 手を一定の速度（2.5以上）で振ったら、自動的に手が離れて飛んでいく
+          if (ctrl.userData.velocity.length() > 2.5) {
+            pot.isGrabbed = false; 
+            ctrl.userData.grabbedPot = null;
+            scene.attach(pot.mesh); // 空間の座標系に戻す
+            
+            // 投げるアシスト
+            const vel = ctrl.userData.velocity.clone().multiplyScalar(3.5);
+            vel.y += 1.0; 
+            vel.z -= 1.0; 
+            
+            flyingPots.push({ mesh: pot.mesh, bodyMat: pot.bodyMat, soilMat: pot.soilMat, leafMat: pot.leafMat, type: pot.type, vel: vel, angVel: new THREE.Vector3((Math.random()-0.5)*15, (Math.random()-0.5)*15, (Math.random()-0.5)*15) });
+            readyPot = null; 
+            
+            triggerHaptics(ctrl, Math.min(vel.length()/15, 1.0), 60);
+            playSound('whoosh', vel.length()/10);
+            setTimeout(spawnReadyPot, 600);
+          }
         }
       });
     }
@@ -533,7 +519,10 @@
 
     function animateFrame() {
       const dt = Math.min(clock.getDelta(), 0.1);
-      if(renderer.xr.isPresenting) trackControllerVelocities();
+      if(renderer.xr.isPresenting) {
+        trackControllerVelocities();
+        handleAutoGrabAndThrow(); // 近接でくっつく＆振って投げる処理
+      }
       stepPhysics(dt);
       renderer.render(scene, camera);
     }
