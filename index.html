@@ -31,7 +31,7 @@
     <div class="absolute bottom-10 left-1/2 -translate-x-1/2 glass-card px-6 py-4 rounded-2xl flex flex-col items-center pointer-events-auto max-w-sm w-full">
       <h3 class="text-amber-400 font-bold mb-2 text-sm"><i class="fa-solid fa-hands"></i> ハンドトラッキング＆VR操作ガイド</h3>
       <ul class="text-xs text-slate-300 space-y-1.5 w-full">
-        <li><span class="inline-block w-6 text-center text-white bg-white/10 rounded mr-1">✋</span> <b>手を近づける:</b> 自動で掴む / <b>手を振る:</b> 投げる</li>
+        <li><span class="inline-block w-6 text-center text-white bg-white/10 rounded mr-1">👆</span> <b>手を添えてピンチ(つまむ):</b> 鉢を掴む / <b>離す:</b> 投げる</li>
         <li><span class="inline-block w-6 text-center text-white bg-white/10 rounded mr-1">✊</span> <b>右手グリップ / 握る:</b> 鉢の種類チェンジ</li>
         <li><span class="inline-block w-6 text-center text-white bg-white/10 rounded mr-1">✊</span> <b>左手グリップ / 握る:</b> 部屋の清掃＆タワー再建</li>
       </ul>
@@ -207,7 +207,7 @@
         const controller = renderer.xr.getController(i);
         xrCameraSpace.add(controller);
         
-        // 代替コントローラーメッシュ（手が認識されない時用）
+        // 代替コントローラーメッシュ
         const handGroup = new THREE.Group();
         const palm = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.02, 0.1), new THREE.MeshStandardMaterial({color: 0x222222, metalness: 0.8, roughness: 0.2}));
         const core = new THREE.Mesh(new THREE.SphereGeometry(0.025, 16, 16), new THREE.MeshStandardMaterial({color: i===0?0xff3333:0x3388ff, emissive: i===0?0xff3333:0x3388ff, emissiveIntensity: 0.8}));
@@ -222,6 +222,70 @@
           this.userData.inputSource = e.data; 
           if (e.data.hand) handGroup.visible = false;
           else handGroup.visible = true;
+        });
+
+        // --- 手を添えて鉢を掴む (ピンチ / トリガー) ---
+        controller.addEventListener('selectstart', (e) => {
+          const ctrl = e.target;
+          if (readyPot && !readyPot.isGrabbed) {
+            const pos = new THREE.Vector3();
+            const hand = xrHands[i];
+            
+            // 手のひらの位置を取得
+            if (hand && hand.children.length > 10) hand.children[10].getWorldPosition(pos);
+            else ctrl.getWorldPosition(pos);
+            
+            const potPos = new THREE.Vector3(); 
+            readyPot.mesh.getWorldPosition(potPos);
+            
+            // 鉢の35cm以内（手を添える距離）でピンチした時だけ掴む（フォースグラブ廃止）
+            if (pos.distanceTo(potPos) < 0.35) {
+              readyPot.isGrabbed = true;
+              ctrl.userData.grabbedPot = readyPot;
+              
+              // 掴んだ瞬間の手の角度と鉢の位置のズレ（オフセット）を計算して記憶
+              const handRotInverse = new THREE.Quaternion();
+              if (hand && hand.children.length > 10) hand.children[10].getWorldQuaternion(handRotInverse);
+              else ctrl.getWorldQuaternion(handRotInverse);
+              handRotInverse.invert();
+
+              ctrl.userData.grabOffset = potPos.clone().sub(pos).applyQuaternion(handRotInverse);
+              triggerHaptics(ctrl, 0.5, 30);
+            }
+          }
+        });
+
+        // --- 鉢を投げる (ピンチを離す) ---
+        controller.addEventListener('selectend', (e) => {
+          const ctrl = e.target;
+          if (ctrl.userData.grabbedPot) {
+            const pot = ctrl.userData.grabbedPot;
+            pot.isGrabbed = false;
+            ctrl.userData.grabbedPot = null;
+            
+            const speed = ctrl.userData.velocity.length();
+            if (speed > 0.8) { 
+              // 振って離した場合は前方に投げる
+              const vel = ctrl.userData.velocity.clone().multiplyScalar(2.5);
+              vel.y += 1.0; // 上方向にアシスト
+              
+              flyingPots.push({ 
+                mesh: pot.mesh, bodyMat: pot.bodyMat, soilMat: pot.soilMat, leafMat: pot.leafMat, type: pot.type, 
+                vel: vel, 
+                angVel: new THREE.Vector3((Math.random()-0.5)*15, (Math.random()-0.5)*15, (Math.random()-0.5)*15) 
+              });
+              readyPot = null;
+              
+              triggerHaptics(ctrl, Math.min(speed/5, 1.0), 60);
+              playSound('whoosh', Math.min(speed/10, 1.0));
+              setTimeout(spawnReadyPot, 600);
+            } else {
+              // 振らずにそっと離した場合は台座に戻る
+              pot.mesh.position.copy(ARENA.readyPos);
+              pot.mesh.rotation.set(0, 0, 0);
+              triggerHaptics(ctrl, 0.2, 20);
+            }
+          }
         });
 
         // 鉢のチェンジ・部屋のリセット
@@ -242,8 +306,8 @@
         const hand = renderer.xr.getHand(i);
         xrCameraSpace.add(hand);
         
-        // 外部スクリプトに依存しない独自のワイヤーフレーム球体を設定
-        hand.userData.jointGeo = new THREE.SphereGeometry(0.009, 8, 8);
+        // 通信環境に関わらず確実に描画される、8ミリのスマートな光る関節玉
+        hand.userData.jointGeo = new THREE.SphereGeometry(0.008, 8, 8);
         hand.userData.jointMat = new THREE.MeshBasicMaterial({ 
           color: i === 0 ? 0xff4444 : 0x44aaff, 
           wireframe: true, transparent: true, opacity: 0.8 
@@ -270,64 +334,29 @@
       }
     }
 
-    function handleAutoGrabAndThrow() {
-      const now = performance.now();
+    // --- ワープバグを防ぐための安全な追従処理 ---
+    function syncGrabbedPots() {
       for (let i = 0; i < 2; i++) {
         const ctrl = xrControllers[i];
-        const hand = xrHands[i];
-        
-        const pos = new THREE.Vector3(); 
-        let usedHand = false;
-        
-        // 手のひら（中指の付け根）の正確な位置を取得
-        if (hand && hand.children.length > 10) {
-            hand.children[10].getWorldPosition(pos);
-            usedHand = true;
-        } else {
-            ctrl.getWorldPosition(pos); 
-        }
-
-        // --- 1. 手を近づけるだけで吸着 ---
-        if (readyPot && !readyPot.isGrabbed && !ctrl.userData.grabbedPot) {
-          const potPos = new THREE.Vector3(); 
-          readyPot.mesh.getWorldPosition(potPos);
-          
-          if (pos.distanceTo(potPos) < 0.20) {
-            readyPot.isGrabbed = true; 
-            ctrl.userData.grabbedPot = readyPot;
-            ctrl.userData.grabTime = now;
-            
-            // ワールド座標から手のローカル座標へそのままの角度で吸着
-            scene.attach(readyPot.mesh);
-            if (usedHand) hand.attach(readyPot.mesh);
-            else ctrl.attach(readyPot.mesh);
-            
-            triggerHaptics(ctrl, 0.5, 30);
-          }
-        }
-        
-        // --- 2. 振って投げる ---
         if (ctrl.userData.grabbedPot) {
           const pot = ctrl.userData.grabbedPot;
-          const speed = ctrl.userData.velocity.length();
+          const hand = xrHands[i];
+          const pos = new THREE.Vector3();
+          const rot = new THREE.Quaternion();
           
-          // 掴んでから0.3秒後、スピード1.2以上で振ったら手から離す
-          if (now - (ctrl.userData.grabTime || 0) > 300 && speed > 1.2) {
-            pot.isGrabbed = false; 
-            ctrl.userData.grabbedPot = null;
-            scene.attach(pot.mesh); // 空間に戻す
-            
-            // 前方斜め上へ強力なスナップアシスト
-            const vel = ctrl.userData.velocity.clone().multiplyScalar(3.0);
-            vel.y += 1.5; 
-            vel.z -= 1.0; 
-            
-            flyingPots.push({ mesh: pot.mesh, bodyMat: pot.bodyMat, soilMat: pot.soilMat, leafMat: pot.leafMat, type: pot.type, vel: vel, angVel: new THREE.Vector3((Math.random()-0.5)*15, (Math.random()-0.5)*15, (Math.random()-0.5)*15) });
-            readyPot = null; 
-            
-            triggerHaptics(ctrl, Math.min(speed/5, 1.0), 60);
-            playSound('whoosh', Math.min(speed/10, 1.0));
-            setTimeout(spawnReadyPot, 600);
+          if (hand && hand.children.length > 10) {
+            hand.children[10].getWorldPosition(pos);
+            hand.children[10].getWorldQuaternion(rot);
+          } else {
+            ctrl.getWorldPosition(pos);
+            ctrl.getWorldQuaternion(rot);
+          }
+          
+          // 記録したオフセットを使って、空間の階層関係を壊さずに位置だけを手に合わせる
+          if (ctrl.userData.grabOffset) {
+            const offset = ctrl.userData.grabOffset.clone().applyQuaternion(rot);
+            pot.mesh.position.copy(pos).add(offset);
+            pot.mesh.quaternion.copy(rot);
           }
         }
       }
@@ -534,7 +563,7 @@
       if(renderer.xr.isPresenting) {
         updateHands();
         trackControllerVelocities();
-        handleAutoGrabAndThrow();
+        syncGrabbedPots(); // 安全な方法で鉢を手の中へ
       }
       stepPhysics(dt);
       renderer.render(scene, camera);
